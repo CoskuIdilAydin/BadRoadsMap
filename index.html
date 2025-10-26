@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bad Roads Map - Gaziosmanpaşa</title>
 
-  <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -13,92 +12,78 @@
     crossorigin=""
   />
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-    }
-    #map {
-      height: 90vh;
-      width: 100%;
-    }
-    .info {
-      padding: 10px;
-      background: white;
-      text-align: center;
-      border-bottom: 1px solid #ccc;
+    body { margin:0; font-family: system-ui, Arial, sans-serif; }
+    #map { height: 100vh; width: 100%; }
+    .banner {
+      position:absolute; z-index:1000; left:0; right:0; top:0;
+      background:#111; color:#fff; padding:8px 12px; font-size:14px; opacity:.9; text-align:center;
     }
   </style>
 </head>
 <body>
-
-  <div class="info">
-    <h2>Bad Roads Map: Gaziosmanpaşa</h2>
-    <p>Click anywhere on the map to mark a bad road (description: pothole).</p>
-  </div>
-
+  <div class="banner">View only. Map editing is locked.</div>
   <div id="map"></div>
 
-  <!-- Leaflet JS -->
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
-
   <script>
-    // Initialize the map centered on Gaziosmanpaşa
-    const map = L.map("map").setView([41.068097, 28.908072], 13);
-
-    // Add the OpenStreetMap base layer
+    // Map
+    const map = L.map("map").setView([41.058, 28.919], 14);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    // Different icons for danger levels
+    // Leaflet colored markers (green/yellow/red)
+    const shadow =
+      "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
+    function colorIcon(color) {
+      return L.icon({
+        iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
+        shadowUrl: shadow,
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowSize: [41, 41]
+      });
+    }
     const icons = {
-      low: L.icon({
-        iconUrl: "https://cdn-icons-png.flaticon.com/512/833/833472.png", // heart
-        iconSize: [25, 25]
-      }),
-      medium: L.icon({
-        iconUrl: "https://cdn-icons-png.flaticon.com/512/616/616408.png", // star
-        iconSize: [25, 25]
-      }),
-      high: L.icon({
-        iconUrl: "https://cdn-icons-png.flaticon.com/512/565/565547.png", // flag
-        iconSize: [25, 25]
-      })
+      low:    colorIcon("green"),
+      medium: colorIcon("yellow"),
+      high:   colorIcon("red")
     };
 
-    // Example data points (all "pothole")
-    const exampleLocations = [
-      { coords: [41.068097, 28.908072], danger: "high" },
-      { coords: [41.045249, 29.00947], danger: "medium" },
-      { coords: [41.02587, 28.97404], danger: "low" }
-    ];
+    // Load data from external JSON
+    fetch("./data/points.json")
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(points => {
+        const bounds = L.latLngBounds([]);
+        points.forEach(p => {
+          const level = (p.danger || "medium").toLowerCase();
+          const icon = icons[level] || icons.medium;
+          const desc = p.desc || "pothole";
+          const latlng = [p.lat, p.lng];
+          L.marker(latlng, { icon })
+            .bindPopup(`<b>${level.toUpperCase()} danger</b><br>${desc}`)
+            .addTo(map);
+          bounds.extend(latlng);
+        });
+        if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
+      })
+      .catch(err => {
+        console.error("Failed to load points.json:", err);
+        alert("Could not load map data (points.json).");
+      });
 
-    exampleLocations.forEach(loc => {
-      L.marker(loc.coords, { icon: icons[loc.danger] })
-        .bindPopup(`<b>${loc.danger.toUpperCase()} danger</b><br>pothole`)
-        .addTo(map);
-    });
-
-    // Allow users to mark new bad roads (always "pothole")
-    map.on("click", function(e) {
-      const level = prompt("Enter danger level (low / medium / high):");
-      if (!icons[level]) {
-        alert("Invalid danger level.");
-        return;
-      }
-
-      L.marker(e.latlng, { icon: icons[level] })
-        .bindPopup(`<b>${level.toUpperCase()} danger</b><br>pothole`)
-        .addTo(map);
-    });
+    // Editing remains disabled (no click handlers)
+    map.getContainer().style.cursor = "default";
   </script>
 </body>
 </html>
-
 
