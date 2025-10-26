@@ -1,0 +1,10 @@
+[
+  { "lat": 41.06009786396319,  "lng": 28.915176977405288, "danger": "medium", "desc": "pothole" },
+  { "lat": 41.0602031226286,   "lng": 28.91894608460783,  "danger": "medium", "desc": "pothole" },
+  { "lat": 41.061781982395516, "lng": 28.927042685265146, "danger": "medium", "desc": "pothole" },
+  { "lat": 41.05404721995212,  "lng": 28.915145673070864, "danger": "medium", "desc": "pothole" },
+  { "lat": 41.05243239870674,  "lng": 28.91407497825617,  "danger": "medium", "desc": "pothole" },
+  { "lat": 41.05186245233305,  "lng": 28.913697085968632, "danger": "medium", "desc": "pothole" },
+  { "lat": 41.05423719631625,  "lng": 28.92994645433284,  "danger": "medium", "desc": "pothole" },
+  { "lat": 41.05456965363337,  "lng": 28.930387328668303, "danger": "medium", "desc": "pothole" }
+]
