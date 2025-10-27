@@ -3,41 +3,76 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bad Roads Map - Gaziosmanpaşa</title>
+  <title>Bad Roads Map - Safe Routes</title>
 
+  <!-- Leaflet core -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
+  <!-- Leaflet Routing Machine -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"
+  />
+
   <style>
-    body { margin:0; font-family: system-ui, Arial, sans-serif; }
+    body { margin: 0; font-family: system-ui, Arial, sans-serif; }
     #map { height: 100vh; width: 100%; }
     .banner {
-      position:absolute; z-index:1000; left:0; right:0; top:0;
-      background:#111; color:#fff; padding:8px 12px; font-size:14px; opacity:.9; text-align:center;
+      position: absolute;
+      z-index: 1000;
+      left: 0; right: 0; top: 0;
+      background: #111;
+      color: #fff;
+      padding: 8px 12px;
+      font-size: 14px;
+      opacity: 0.9;
+      text-align: center;
     }
   </style>
 </head>
 <body>
-  <div class="banner">View only. Map editing is locked.</div>
+  <div class="banner">Routes to avoid pothole zones.</div>
   <div id="map"></div>
 
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
+  <!-- JS libraries -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
   <script>
-    // Map
+    // Initialize map
     const map = L.map("map").setView([41.058, 28.919], 14);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    // Leaflet colored markers (green/yellow/red)
+    // Ask for user's location and show it
+    map.locate({ setView: true, maxZoom: 16 });
+
+    function onLocationFound(e) {
+      const radius = e.accuracy / 2;
+      L.marker(e.latlng)
+        .addTo(map)
+        .bindPopup("You are here (±" + Math.round(radius) + " m)")
+        .openPopup();
+      L.circle(e.latlng, radius, {
+        color: "blue",
+        fillColor: "#3f3fff",
+        fillOpacity: 0.2
+      }).addTo(map);
+    }
+
+    function onLocationError(e) {
+      alert("Could not determine your location. Please allow location access or set a manual point.");
+    }
+
+    map.on("locationfound", onLocationFound);
+    map.on("locationerror", onLocationError);
+
+    // Colored icons (green/yellow/red)
     const shadow =
       "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
     function colorIcon(color) {
@@ -51,26 +86,23 @@
       });
     }
     const icons = {
-      low:    colorIcon("green"),
+      low: colorIcon("green"),
       medium: colorIcon("yellow"),
-      high:   colorIcon("red")
+      high: colorIcon("red")
     };
 
-    // Load data from external JSON
+    // Load pothole data
+    let potholes = [];
     fetch("./data/points.json")
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+      .then(r => r.json())
       .then(points => {
+        potholes = points;
         const bounds = L.latLngBounds([]);
         points.forEach(p => {
-          const level = (p.danger || "medium").toLowerCase();
-          const icon = icons[level] || icons.medium;
-          const desc = p.desc || "pothole";
+          const icon = icons[(p.danger || "medium").toLowerCase()] || icons.medium;
           const latlng = [p.lat, p.lng];
           L.marker(latlng, { icon })
-            .bindPopup(`<b>${level.toUpperCase()} danger</b><br>${desc}`)
+            .bindPopup(`<b>Pothole</b><br>${p.desc || ""}`)
             .addTo(map);
           bounds.extend(latlng);
         });
@@ -81,9 +113,38 @@
         alert("Could not load map data (points.json).");
       });
 
-    // Editing remains disabled (no click handlers)
+    // Routing control (user can set start & destination)
+    const control = L.Routing.control({
+      waypoints: [],
+      routeWhileDragging: true,
+      geocoder: null,
+      createMarker: (i, wp) => L.marker(wp.latLng, { draggable: true }),
+      lineOptions: { styles: [{ color: "blue", opacity: 0.7, weight: 5 }] },
+      router: L.Routing.osrmv1({
+        serviceUrl: "https://router.project-osrm.org/route/v1"
+      })
+    }).addTo(map);
+
+    // Check if route passes near potholes
+    function isNearPothole(latlng, radius = 50) {
+      return potholes.some(p => map.distance(latlng, [p.lat, p.lng]) < radius);
+    }
+
+    control.on("routesfound", function (e) {
+      const route = e.routes[0];
+      let badSections = 0;
+
+      route.coordinates.forEach(coord => {
+        if (isNearPothole(coord)) badSections++;
+      });
+
+      if (badSections > 0) {
+        alert(`This route passes near ${badSections} pothole area(s). Try another route for a smoother ride.`);
+      }
+    });
+
+    // Disable editing
     map.getContainer().style.cursor = "default";
   </script>
 </body>
 </html>
-
