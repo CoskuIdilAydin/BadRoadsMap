@@ -6,35 +6,23 @@
   <title>Bad Roads Map - Safe Routes</title>
 
   <!-- Leaflet core -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    crossorigin=""
-  />
-  <!-- Leaflet Routing Machine -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"
-  />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <!-- Leaflet Routing Machine (used under the hood; UI hidden) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
 
   <style>
     body { margin: 0; font-family: system-ui, Arial, sans-serif; }
     #map { height: 100vh; width: 100%; }
     .banner {
-      position: absolute;
-      z-index: 1000;
-      left: 0; right: 0; top: 0;
-      background: #111;
-      color: #fff;
-      padding: 8px 12px;
-      font-size: 14px;
-      opacity: 0.9;
-      text-align: center;
+      position: absolute; z-index: 1000; left: 0; right: 0; top: 0;
+      background: #111; color: #fff; padding: 8px 12px; font-size: 14px; opacity: .9; text-align: center;
     }
+    /* Hide the Routing Machine sidebar; we drive it programmatically */
+    .leaflet-routing-container { display: none; }
   </style>
 </head>
 <body>
-  <div class="banner">Routes to avoid pothole zones.</div>
+  <div class="banner">Click to set Start, then click to set End. The app will pick the safest route that avoids potholes.</div>
   <div id="map"></div>
 
   <!-- JS libraries -->
@@ -42,56 +30,34 @@
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
   <script>
-    // Initialize map
+    // --- Map ---
     const map = L.map("map").setView([41.058, 28.919], 14);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    // Ask for user's location and show it
-    map.locate({ setView: true, maxZoom: 16 });
+    // --- Ask for user's location (no blue circle, only a marker if allowed) ---
+    map.locate({ setView: false, maxZoom: 16 });
+    map.on("locationfound", (e) => {
+      L.marker(e.latlng).addTo(map).bindPopup("You are here").openPopup();
+    });
+    map.on("locationerror", () => {
+      // silently ignore; user can click to set start/end
+    });
 
-    function onLocationFound(e) {
-      const radius = e.accuracy / 2;
-      L.marker(e.latlng)
-        .addTo(map)
-        .bindPopup("You are here (±" + Math.round(radius) + " m)")
-        .openPopup();
-      L.circle(e.latlng, radius, {
-        color: "blue",
-        fillColor: "#3f3fff",
-        fillOpacity: 0.2
-      }).addTo(map);
-    }
-
-    function onLocationError(e) {
-      alert("Could not determine your location. Please allow location access or set a manual point.");
-    }
-
-    map.on("locationfound", onLocationFound);
-    map.on("locationerror", onLocationError);
-
-    // Colored icons (green/yellow/red)
-    const shadow =
-      "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
+    // --- Colored icons for potholes ---
+    const shadow = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
     function colorIcon(color) {
       return L.icon({
         iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
-        shadowUrl: shadow,
-        iconSize: [25, 41],
-        iconAnchor: [12, 41],
-        popupAnchor: [1, -34],
-        shadowSize: [41, 41]
+        shadowUrl: shadow, iconSize: [25, 41], iconAnchor: [12, 41],
+        popupAnchor: [1, -34], shadowSize: [41, 41]
       });
     }
-    const icons = {
-      low: colorIcon("green"),
-      medium: colorIcon("yellow"),
-      high: colorIcon("red")
-    };
+    const icons = { low: colorIcon("green"), medium: colorIcon("yellow"), high: colorIcon("red") };
 
-    // Load pothole data
+    // --- Load pothole points ---
     let potholes = [];
     fetch("./data/points.json")
       .then(r => r.json())
@@ -101,50 +67,105 @@
         points.forEach(p => {
           const icon = icons[(p.danger || "medium").toLowerCase()] || icons.medium;
           const latlng = [p.lat, p.lng];
-          L.marker(latlng, { icon })
-            .bindPopup(`<b>Pothole</b><br>${p.desc || ""}`)
-            .addTo(map);
+          L.marker(latlng, { icon }).bindPopup(`<b>Pothole</b><br>${p.desc || ""}`).addTo(map);
           bounds.extend(latlng);
         });
         if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
       })
-      .catch(err => {
-        console.error("Failed to load points.json:", err);
-        alert("Could not load map data (points.json).");
-      });
+      .catch(err => console.error("Failed to load points.json:", err));
 
-    // Routing control (user can set start & destination)
-    const control = L.Routing.control({
-      waypoints: [],
-      routeWhileDragging: true,
-      geocoder: null,
-      createMarker: (i, wp) => L.marker(wp.latLng, { draggable: true }),
-      lineOptions: { styles: [{ color: "blue", opacity: 0.7, weight: 5 }] },
-      router: L.Routing.osrmv1({
-        serviceUrl: "https://router.project-osrm.org/route/v1"
-      })
-    }).addTo(map);
+    // --- Routing (programmatic) ---
+    // Create a hidden routing control to access OSRM with alternatives.
+    const router = L.Routing.osrmv1({
+      serviceUrl: "https://router.project-osrm.org/route/v1",
+      profile: "driving",
+      routingOptions: { alternatives: true, overview: "full", steps: false }
+    });
 
-    // Check if route passes near potholes
-    function isNearPothole(latlng, radius = 50) {
-      return potholes.some(p => map.distance(latlng, [p.lat, p.lng]) < radius);
+    // Utility: distance from route point to nearest pothole
+    function isNearPothole(latlng, radiusMeters = 50) {
+      for (let i = 0; i < potholes.length; i++) {
+        const p = potholes[i];
+        if (map.distance(latlng, [p.lat, p.lng]) < radiusMeters) return true;
+      }
+      return false;
     }
 
-    control.on("routesfound", function (e) {
-      const route = e.routes[0];
-      let badSections = 0;
+    // Score route by counting points near potholes (lower is better)
+    function scoreRoute(route) {
+      let bad = 0;
+      for (const c of route.coordinates) if (isNearPothole(c)) bad++;
+      return bad;
+    }
 
-      route.coordinates.forEach(coord => {
-        if (isNearPothole(coord)) badSections++;
+    // Drawn layers
+    let startMarker = null, endMarker = null, bestLine = null;
+
+    function setStart(latlng) {
+      if (startMarker) map.removeLayer(startMarker);
+      startMarker = L.marker(latlng).addTo(map).bindPopup("Start").openPopup();
+    }
+    function setEnd(latlng) {
+      if (endMarker) map.removeLayer(endMarker);
+      endMarker = L.marker(latlng).addTo(map).bindPopup("End").openPopup();
+    }
+    function clearRouteLine() {
+      if (bestLine) { map.removeLayer(bestLine); bestLine = null; }
+    }
+
+    // Compute and draw best (safest) route
+    function computeBestRoute() {
+      if (!startMarker || !endMarker) return;
+
+      const wps = [
+        L.Routing.waypoint(startMarker.getLatLng()),
+        L.Routing.waypoint(endMarker.getLatLng())
+      ];
+
+      router.route(wps, (err, routes) => {
+        if (err || !routes || !routes.length) {
+          alert("No route found. Try different points.");
+          clearRouteLine();
+          return;
+        }
+
+        // Pick the alternative with the fewest near-pothole points
+        let best = routes[0], bestScore = scoreRoute(routes[0]);
+        for (let i = 1; i < routes.length; i++) {
+          const s = scoreRoute(routes[i]);
+          if (s < bestScore) { best = routes[i]; bestScore = s; }
+        }
+
+        // Draw only the best route
+        clearRouteLine();
+        bestLine = L.polyline(best.coordinates, { color: "green", weight: 6, opacity: 0.9 }).addTo(map);
+        map.fitBounds(bestLine.getBounds(), { padding: [40, 40] });
+
+        if (bestScore > 0) {
+          console.log(`Selected route still passes near ${bestScore} pothole points; this is the least-affected option.`);
+        }
       });
+    }
 
-      if (badSections > 0) {
-        alert(`This route passes near ${badSections} pothole area(s). Try another route for a smoother ride.`);
+    // --- Click interaction: first click = Start, second = End, then compute ---
+    map.on("click", (e) => {
+      if (!startMarker) {
+        setStart(e.latlng);
+      } else if (!endMarker) {
+        setEnd(e.latlng);
+        computeBestRoute();
+      } else {
+        // Third click: reset and start a new route from this point
+        map.removeLayer(startMarker); map.removeLayer(endMarker);
+        startMarker = endMarker = null;
+        clearRouteLine();
+        setStart(e.latlng);
       }
     });
 
-    // Disable editing
-    map.getContainer().style.cursor = "default";
+    // Map is view-only for pothole data; no edit handlers
+    map.getContainer().style.cursor = "crosshair";
   </script>
 </body>
 </html>
+
