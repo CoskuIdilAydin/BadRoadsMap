@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bad Roads Map - Safe Routes</title>
 
-  <!-- Leaflet core -->
+  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <!-- Leaflet Routing Machine (used under the hood; UI hidden) -->
+  <!-- Leaflet Routing Machine (optional; we guard if it fails to load) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
 
   <style>
@@ -15,17 +15,18 @@
     #map { height: 100vh; width: 100%; }
     .banner {
       position: absolute; z-index: 1000; left: 0; right: 0; top: 0;
-      background: #111; color: #fff; padding: 8px 12px; font-size: 14px; opacity: .9; text-align: center;
+      background: #111; color: #fff; padding: 8px 12px; font-size: 14px;
+      opacity: .9; text-align: center;
+      /* IMPORTANT: don't block map clicks */
+      pointer-events: none;
     }
-    /* Hide the Routing Machine sidebar; we drive it programmatically */
     .leaflet-routing-container { display: none; }
   </style>
 </head>
 <body>
-  <div class="banner">Click to set Start, then click to set End. The app will pick the safest route that avoids potholes.</div>
+  <div class="banner">Click map once = Start, twice = End, third click resets. The app picks the safest route (fewest potholes).</div>
   <div id="map"></div>
 
-  <!-- JS libraries -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
@@ -37,14 +38,9 @@
       attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    // --- Ask for user's location (no blue circle, only a marker if allowed) ---
+    // Optional: "You are here" marker (no blue circle)
     map.locate({ setView: false, maxZoom: 16 });
-    map.on("locationfound", (e) => {
-      L.marker(e.latlng).addTo(map).bindPopup("You are here").openPopup();
-    });
-    map.on("locationerror", () => {
-      // silently ignore; user can click to set start/end
-    });
+    map.on("locationfound", (e) => { L.marker(e.latlng).addTo(map).bindPopup("You are here"); });
 
     // --- Colored icons for potholes ---
     const shadow = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
@@ -74,15 +70,22 @@
       })
       .catch(err => console.error("Failed to load points.json:", err));
 
-    // --- Routing (programmatic) ---
-    // Create a hidden routing control to access OSRM with alternatives.
-    const router = L.Routing.osrmv1({
-      serviceUrl: "https://router.project-osrm.org/route/v1",
-      profile: "driving",
-      routingOptions: { alternatives: true, overview: "full", steps: false }
-    });
+    // --- Routing (guarded so failures won't break clicks) ---
+    let router = null;
+    try {
+      if (L.Routing && L.Routing.osrmv1) {
+        router = L.Routing.osrmv1({
+          serviceUrl: "https://router.project-osrm.org/route/v1",
+          profile: "driving",
+          routingOptions: { alternatives: true, overview: "full", steps: false }
+        });
+      } else {
+        console.warn("Routing plugin not available; you can still place Start/End.");
+      }
+    } catch (e) {
+      console.warn("Routing init failed:", e);
+    }
 
-    // Utility: distance from route point to nearest pothole
     function isNearPothole(latlng, radiusMeters = 50) {
       for (let i = 0; i < potholes.length; i++) {
         const p = potholes[i];
@@ -90,82 +93,36 @@
       }
       return false;
     }
-
-    // Score route by counting points near potholes (lower is better)
     function scoreRoute(route) {
       let bad = 0;
       for (const c of route.coordinates) if (isNearPothole(c)) bad++;
       return bad;
     }
 
-    // Drawn layers
     let startMarker = null, endMarker = null, bestLine = null;
+    function clearRouteLine() { if (bestLine) { map.removeLayer(bestLine); bestLine = null; } }
+    function setStart(latlng) { if (startMarker) map.removeLayer(startMarker); startMarker = L.marker(latlng).addTo(map).bindPopup("Start").openPopup(); }
+    function setEnd(latlng)   { if (endMarker)   map.removeLayer(endMarker);   endMarker   = L.marker(latlng).addTo(map).bindPopup("End").openPopup();   }
 
-    function setStart(latlng) {
-      if (startMarker) map.removeLayer(startMarker);
-      startMarker = L.marker(latlng).addTo(map).bindPopup("Start").openPopup();
-    }
-    function setEnd(latlng) {
-      if (endMarker) map.removeLayer(endMarker);
-      endMarker = L.marker(latlng).addTo(map).bindPopup("End").openPopup();
-    }
-    function clearRouteLine() {
-      if (bestLine) { map.removeLayer(bestLine); bestLine = null; }
-    }
-
-    // Compute and draw best (safest) route
     function computeBestRoute() {
       if (!startMarker || !endMarker) return;
+      if (!router) { alert("Routing engine not loaded. Check your internet/ad-blocker and reload."); return; }
 
-      const wps = [
-        L.Routing.waypoint(startMarker.getLatLng()),
-        L.Routing.waypoint(endMarker.getLatLng())
-      ];
-
+      const wps = [ L.Routing.waypoint(startMarker.getLatLng()), L.Routing.waypoint(endMarker.getLatLng()) ];
       router.route(wps, (err, routes) => {
-        if (err || !routes || !routes.length) {
-          alert("No route found. Try different points.");
-          clearRouteLine();
-          return;
-        }
+        if (err || !routes || !routes.length) { alert("No route found. Try different points."); clearRouteLine(); return; }
 
-        // Pick the alternative with the fewest near-pothole points
         let best = routes[0], bestScore = scoreRoute(routes[0]);
         for (let i = 1; i < routes.length; i++) {
           const s = scoreRoute(routes[i]);
           if (s < bestScore) { best = routes[i]; bestScore = s; }
         }
-
-        // Draw only the best route
         clearRouteLine();
         bestLine = L.polyline(best.coordinates, { color: "green", weight: 6, opacity: 0.9 }).addTo(map);
         map.fitBounds(bestLine.getBounds(), { padding: [40, 40] });
-
-        if (bestScore > 0) {
-          console.log(`Selected route still passes near ${bestScore} pothole points; this is the least-affected option.`);
-        }
       });
     }
 
-    // --- Click interaction: first click = Start, second = End, then compute ---
+    // --- Clicks: 1st = Start, 2nd = End, 3rd = reset & new Start ---
     map.on("click", (e) => {
-      if (!startMarker) {
-        setStart(e.latlng);
-      } else if (!endMarker) {
-        setEnd(e.latlng);
-        computeBestRoute();
-      } else {
-        // Third click: reset and start a new route from this point
-        map.removeLayer(startMarker); map.removeLayer(endMarker);
-        startMarker = endMarker = null;
-        clearRouteLine();
-        setStart(e.latlng);
-      }
-    });
-
-    // Map is view-only for pothole data; no edit handlers
-    map.getContainer().style.cursor = "crosshair";
-  </script>
-</body>
-</html>
-
+      console.log("Map click at:", e.latlng); //
