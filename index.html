@@ -43,15 +43,16 @@
     <aside class="sidebar">
       <h2>Safe Route (pothole-aware)</h2>
       <p class="muted">
-        Click the map to set <b>Start</b>, then click again to set <b>End</b>.
-        The app will draw a route only if it <b>does not pass near any yellow hazards</b>.
+        Click the map to set <b>Start</b>, then click again to set <b>End</b>.<br>
+        The app prefers routes that avoid <b>yellow</b> hazards.<br>
+        If all routes touch hazards, it picks the <b>least affected</b> one.
       </p>
       <div id="status" class="status">Waiting for Start…</div>
       <p class="muted" style="margin-top:10px;">
         Notes:<br>
         – Yellow = medium hazard (pothole).<br>
-        – If no safe alternative exists, no route is shown.<br>
-        – Click a third time to reset and choose a new Start.
+        – Click a third time to reset and choose a new Start.<br>
+        – Your location is shown as a blue dot when permitted.
       </p>
     </aside>
   </div>
@@ -72,22 +73,23 @@
       attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    const ROUTE_COLOR = "#1976d2"; // blue
+    const ROUTE_COLOR = "#64b5f6"; // light blue for routes
+    const LOC_DOT_COLOR = "#1976d2"; // blue for user location dot
 
     // ---------- Sidebar status helper ----------
     const statusEl = document.getElementById("status");
     function setStatus(text) { statusEl.textContent = text; }
 
-    // ---------- Your location as a blue dot (no accuracy circle) ----------
+    // ---------- Your location as a blue circle dot ----------
     let userLocDot = null;
     map.locate({ setView: false, maxZoom: 16 });
     map.on("locationfound", (e) => {
       if (userLocDot) map.removeLayer(userLocDot);
       userLocDot = L.circleMarker(e.latlng, {
         radius: 6,
-        color: ROUTE_COLOR,
+        color: LOC_DOT_COLOR,
         weight: 2,
-        fillColor: ROUTE_COLOR,
+        fillColor: LOC_DOT_COLOR,
         fillOpacity: 1
       }).addTo(map).bindPopup("Your location");
     });
@@ -138,7 +140,7 @@
           profile: "driving",
           timeout: 30000,
           urlParameters: {
-            alternatives: true,
+            alternatives: true,     // ask OSRM for alternatives
             overview: "full",
             steps: false,
             geometries: "geojson"
@@ -149,22 +151,28 @@
       console.warn("Routing init failed:", e);
     }
 
-    // Hard-avoid all yellow hazards within radius
-    const AVOID_LEVELS = ["medium"]; // add "high" if you want to avoid red, too
+    // Preference settings: avoid yellow when possible
+    const AVOID_LEVELS = ["medium"]; // add "high" to also weight red strongly
     const AVOID_RADIUS_M = 50;
 
-    function isNearDanger(latlng) {
-      for (let i = 0; i < potholes.length; i++) {
-        const p = potholes[i];
+    function hazardHitsOnRoute(route) {
+      let hits = 0;
+      for (const p of potholes) {
         if (!AVOID_LEVELS.includes((p.danger || "medium").toLowerCase())) continue;
-        if (map.distance(latlng, [p.lat, p.lng]) < AVOID_RADIUS_M) return true;
+        // quick scan: if any coordinate gets within radius to this hazard, count a hit
+        for (const c of route.coordinates) {
+          if (map.distance(c, [p.lat, p.lng]) < AVOID_RADIUS_M) { hits++; break; }
+        }
       }
-      return false;
+      return hits;
     }
 
-    function routeIsSafe(route) {
-      for (const c of route.coordinates) if (isNearDanger(c)) return false;
-      return true;
+    // Score: prioritize fewer hazard hits; break ties with distance
+    function routeScore(route) {
+      const hits = hazardHitsOnRoute(route);
+      const dist = route.summary?.totalDistance || 0;
+      // large weight on hazards so we prefer safety even if longer
+      return hits * 1e9 + dist; // 1e9 >> typical distances, ensures hits dominate
     }
 
     // ---------- Click-to-route flow ----------
@@ -186,10 +194,10 @@
     function setEnd(latlng) {
       if (endMarker) map.removeLayer(endMarker);
       endMarker = L.marker(latlng).addTo(map).bindPopup("End").openPopup();
-      setStatus("End set. Searching for a safe route that avoids yellow hazards…");
+      setStatus("End set. Searching for a route that avoids yellow hazards when possible…");
     }
 
-    function computeAndDrawSafeRoute() {
+    function computeAndDrawBestRoute() {
       if (!router) { setStatus("Routing engine unavailable. Check connection or ad-blocker."); return; }
       if (!startMarker || !endMarker) return;
 
@@ -205,16 +213,13 @@
           return;
         }
 
-        const safeRoutes = routes.filter(routeIsSafe);
-        if (!safeRoutes.length) {
-          setStatus(`No safe route that avoids yellow hazards within ${AVOID_RADIUS_M} m. Move Start/End and try again.`);
-          if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-          return;
-        }
-
-        // choose shortest safe route
-        safeRoutes.sort((a, b) => (a.summary?.totalDistance || 0) - (b.summary?.totalDistance || 0));
-        const best = safeRoutes[0];
+        // Always pick a route:
+        // 1) prefer routes with zero hazard hits
+        // 2) otherwise pick route with fewest hits
+        // 3) break ties with shortest distance
+        routes.sort((a, b) => routeScore(a) - routeScore(b));
+        const best = routes[0];
+        const hits = hazardHitsOnRoute(best);
 
         if (routeLine) map.removeLayer(routeLine);
         routeLine = L.polyline(best.coordinates, {
@@ -224,7 +229,11 @@
 
         const km = ((best.summary?.totalDistance || 0) / 1000).toFixed(2);
         const mins = Math.round((best.summary?.totalTime || 0) / 60);
-        setStatus(`Safe route found. Distance: ${km} km, Time: ~${mins} min. Avoiding yellow hazards within ${AVOID_RADIUS_M} m.`);
+        if (hits === 0) {
+          setStatus(`Safe route found. Distance: ${km} km, Time: ~${mins} min. No yellow hazards within ${AVOID_RADIUS_M} m.`);
+        } else {
+          setStatus(`Best available route. Distance: ${km} km, Time: ~${mins} min. Unavoidable yellow hazard zones encountered: ${hits}.`);
+        }
       });
     }
 
@@ -234,7 +243,7 @@
         setStart(e.latlng);
       } else if (!endMarker) {
         setEnd(e.latlng);
-        computeAndDrawSafeRoute();
+        computeAndDrawBestRoute();
       } else {
         clearRoute();
         setStart(e.latlng);
@@ -245,4 +254,3 @@
   </script>
 </body>
 </html>
-
