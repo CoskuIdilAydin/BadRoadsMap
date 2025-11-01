@@ -12,7 +12,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <!-- Leaflet Routing Machine (used programmatically) -->
+  <!-- Leaflet Routing Machine CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"
@@ -43,16 +43,16 @@
     <aside class="sidebar">
       <h2>Safe Route (pothole-aware)</h2>
       <p class="muted">
-        Click the map to set <b>Start</b>, then click again to set <b>End</b>.<br>
-        The app prefers routes that avoid <b>yellow</b> hazards.<br>
-        If all routes touch hazards, it picks the <b>least affected</b> one.
+        Click once to set <b>Start</b>, click again to set <b>End</b>.<br>
+        The app prefers routes that stay away from <b>yellow</b> hazards.<br>
+        If avoidance isn’t possible, it picks the <b>least affected</b> route.
       </p>
       <div id="status" class="status">Waiting for Start…</div>
       <p class="muted" style="margin-top:10px;">
         Notes:<br>
         – Yellow = medium hazard (pothole).<br>
         – Click a third time to reset and choose a new Start.<br>
-        – Your location is shown as a blue dot when permitted.
+        – Your location appears as a blue dot if permitted.
       </p>
     </aside>
   </div>
@@ -73,65 +73,50 @@
       attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-    const ROUTE_COLOR = "#64b5f6"; // light blue for routes
-    const LOC_DOT_COLOR = "#1976d2"; // blue for user location dot
+    const ROUTE_COLOR = "#64b5f6";     // light blue route
+    const LOC_DOT_COLOR = "#1976d2";   // blue location dot
 
-    // ---------- Sidebar status helper ----------
+    // ---------- Sidebar status ----------
     const statusEl = document.getElementById("status");
-    function setStatus(text) { statusEl.textContent = text; }
+    const setStatus = (t) => statusEl.textContent = t;
 
-    // ---------- Your location as a blue circle dot ----------
+    // ---------- Your location: blue circle dot ----------
     let userLocDot = null;
     map.locate({ setView: false, maxZoom: 16 });
     map.on("locationfound", (e) => {
       if (userLocDot) map.removeLayer(userLocDot);
       userLocDot = L.circleMarker(e.latlng, {
-        radius: 6,
-        color: LOC_DOT_COLOR,
-        weight: 2,
-        fillColor: LOC_DOT_COLOR,
-        fillOpacity: 1
+        radius: 6, color: LOC_DOT_COLOR, weight: 2,
+        fillColor: LOC_DOT_COLOR, fillOpacity: 1
       }).addTo(map).bindPopup("Your location");
     });
-    map.on("locationerror", () => { /* ignore; manual start/end still works */ });
 
     // ---------- Hazard markers (green/yellow/red) ----------
     const shadow = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
-    function colorIcon(color) {
-      return L.icon({
-        iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
-        shadowUrl: shadow,
-        iconSize: [25, 41], iconAnchor: [12, 41],
-        popupAnchor: [1, -34], shadowSize: [41, 41]
-      });
-    }
+    const colorIcon = (color) => L.icon({
+      iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
+      shadowUrl: shadow, iconSize: [25,41], iconAnchor: [12,41],
+      popupAnchor: [1,-34], shadowSize: [41,41]
+    });
     const icons = { low: colorIcon("green"), medium: colorIcon("yellow"), high: colorIcon("red") };
 
-    // ---------- Load pothole data ----------
     let potholes = [];
     fetch("./data/points.json")
-      .then(r => {
-        if (!r.ok) throw new Error("points.json HTTP " + r.status);
-        return r.json();
-      })
+      .then(r => { if (!r.ok) throw new Error("points.json HTTP " + r.status); return r.json(); })
       .then(points => {
         potholes = Array.isArray(points) ? points : [];
         const bounds = L.latLngBounds();
         potholes.forEach(p => {
-          const level = (p.danger || "medium").toLowerCase();
-          const icon = icons[level] || icons.medium;
+          const icon = icons[(p.danger || "medium").toLowerCase()] || icons.medium;
           const latlng = [p.lat, p.lng];
           L.marker(latlng, { icon }).bindPopup(`Pothole<br>${p.desc || ""}`).addTo(map);
           bounds.extend(latlng);
         });
         if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
       })
-      .catch(err => {
-        console.warn("Could not load data/points.json:", err);
-        setStatus("Data could not be loaded. Map is still usable.");
-      });
+      .catch(err => setStatus("Data load warning: " + err.message));
 
-    // ---------- Routing (OSRM via LRM, programmatic) ----------
+    // ---------- Routing (OSRM) ----------
     let router = null;
     try {
       if (L.Routing && L.Routing.osrmv1) {
@@ -139,43 +124,37 @@
           serviceUrl: "https://router.project-osrm.org/route/v1",
           profile: "driving",
           timeout: 30000,
-          urlParameters: {
-            alternatives: true,     // ask OSRM for alternatives
-            overview: "full",
-            steps: false,
-            geometries: "geojson"
-          }
+          urlParameters: { alternatives: true, overview: "full", steps: false, geometries: "geojson" }
         });
       }
-    } catch (e) {
-      console.warn("Routing init failed:", e);
-    }
+    } catch (e) { setStatus("Routing init failed."); }
 
-    // Preference settings: avoid yellow when possible
-    const AVOID_LEVELS = ["medium"]; // add "high" to also weight red strongly
-    const AVOID_RADIUS_M = 50;
+    // Prefer away from yellow hazards — soft preference (no blocking)
+    const PREFER_LEVELS = ["medium"]; // add "high" to also weight red
+    const PROX_RADIUS = 40;           // internal scoring radius (no UI messaging)
 
-    function hazardHitsOnRoute(route) {
+    function hazardHits(route) {
+      // count how many *distinct hazards* lie close to the route
       let hits = 0;
       for (const p of potholes) {
-        if (!AVOID_LEVELS.includes((p.danger || "medium").toLowerCase())) continue;
-        // quick scan: if any coordinate gets within radius to this hazard, count a hit
+        if (!PREFER_LEVELS.includes((p.danger || "medium").toLowerCase())) continue;
+        const target = [p.lat, p.lng];
+        // quick proximity test along the route
         for (const c of route.coordinates) {
-          if (map.distance(c, [p.lat, p.lng]) < AVOID_RADIUS_M) { hits++; break; }
+          if (map.distance(c, target) < PROX_RADIUS) { hits++; break; }
         }
       }
       return hits;
     }
 
-    // Score: prioritize fewer hazard hits; break ties with distance
+    // Score routes: fewer hazard hits first, then shorter distance
     function routeScore(route) {
-      const hits = hazardHitsOnRoute(route);
-      const dist = route.summary?.totalDistance || 0;
-      // large weight on hazards so we prefer safety even if longer
-      return hits * 1e9 + dist; // 1e9 >> typical distances, ensures hits dominate
+      const h = hazardHits(route);
+      const d = route.summary?.totalDistance || 0;
+      return h * 1e9 + d; // hazards dominate, distance breaks ties
     }
 
-    // ---------- Click-to-route flow ----------
+    // ---------- Click-to-route ----------
     let startMarker = null, endMarker = null, routeLine = null;
 
     function clearRoute() {
@@ -184,66 +163,48 @@
       if (routeLine)   map.removeLayer(routeLine);
       startMarker = endMarker = routeLine = null;
     }
-
-    function setStart(latlng) {
-      if (startMarker) map.removeLayer(startMarker);
+    function setStart(latlng) { if (startMarker) map.removeLayer(startMarker);
       startMarker = L.marker(latlng).addTo(map).bindPopup("Start").openPopup();
-      setStatus("Start set. Click the map again to set End.");
+      setStatus("Start set. Click again to set End.");
     }
-
-    function setEnd(latlng) {
-      if (endMarker) map.removeLayer(endMarker);
+    function setEnd(latlng) { if (endMarker) map.removeLayer(endMarker);
       endMarker = L.marker(latlng).addTo(map).bindPopup("End").openPopup();
-      setStatus("End set. Searching for a route that avoids yellow hazards when possible…");
+      setStatus("End set. Finding best route…");
     }
 
-    function computeAndDrawBestRoute() {
-      if (!router) { setStatus("Routing engine unavailable. Check connection or ad-blocker."); return; }
+    function computeRoute() {
+      if (!router) { setStatus("Routing unavailable. Check connection or ad-blocker."); return; }
       if (!startMarker || !endMarker) return;
 
-      const wps = [
-        L.Routing.waypoint(startMarker.getLatLng()),
-        L.Routing.waypoint(endMarker.getLatLng())
-      ];
-
+      const wps = [ L.Routing.waypoint(startMarker.getLatLng()), L.Routing.waypoint(endMarker.getLatLng()) ];
       router.route(wps, (err, routes) => {
         if (err || !routes || !routes.length) {
           setStatus("No route found. Try different points.");
           if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
           return;
         }
-
-        // Always pick a route:
-        // 1) prefer routes with zero hazard hits
-        // 2) otherwise pick route with fewest hits
-        // 3) break ties with shortest distance
+        // Always choose *some* route; prefer fewer hazard hits
         routes.sort((a, b) => routeScore(a) - routeScore(b));
         const best = routes[0];
-        const hits = hazardHitsOnRoute(best);
 
         if (routeLine) map.removeLayer(routeLine);
-        routeLine = L.polyline(best.coordinates, {
-          color: ROUTE_COLOR, weight: 6, opacity: 0.9
-        }).addTo(map);
+        routeLine = L.polyline(best.coordinates, { color: ROUTE_COLOR, weight: 6, opacity: 0.9 }).addTo(map);
         map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
 
         const km = ((best.summary?.totalDistance || 0) / 1000).toFixed(2);
         const mins = Math.round((best.summary?.totalTime || 0) / 60);
-        if (hits === 0) {
-          setStatus(`Safe route found. Distance: ${km} km, Time: ~${mins} min. No yellow hazards within ${AVOID_RADIUS_M} m.`);
-        } else {
-          setStatus(`Best available route. Distance: ${km} km, Time: ~${mins} min. Unavoidable yellow hazard zones encountered: ${hits}.`);
-        }
+        const hits = hazardHits(best);
+        setStatus(`Route ready. Distance: ${km} km, Time: ~${mins} min. Yellow zones encountered: ${hits}.`);
       });
     }
 
-    // Clicks: 1 = Start, 2 = End (compute), 3 = reset to new Start
+    // 1st click = Start, 2nd = End (compute), 3rd = reset & new Start
     map.on("click", (e) => {
       if (!startMarker) {
         setStart(e.latlng);
       } else if (!endMarker) {
         setEnd(e.latlng);
-        computeAndDrawBestRoute();
+        computeRoute();
       } else {
         clearRoute();
         setStart(e.latlng);
@@ -254,3 +215,4 @@
   </script>
 </body>
 </html>
+
