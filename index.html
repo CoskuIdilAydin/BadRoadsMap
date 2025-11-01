@@ -3,12 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bad Roads Map – Safe Routes</title>
+  <title>Bad Roads Map – Strict Yellow Avoidance</title>
 
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <!-- Leaflet Routing Machine CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css">
 
   <style>
     html, body { height: 100%; margin: 0; }
@@ -26,236 +24,33 @@
       margin-top: 10px; padding: 8px 10px; border: 1px solid #ddd;
       background: #fafafa; border-radius: 6px; white-space: pre-line;
     }
-    .leaflet-routing-container { display: none; } /* hide LRM panel */
+    .leaflet-routing-container { display: none; }
   </style>
 </head>
 <body>
   <div id="app">
     <div id="map"></div>
     <aside class="sidebar">
-      <h2>Safe Route (strict 10 m avoidance)</h2>
+      <h2>Safe Route (no yellow crossing)</h2>
       <p class="muted">
-        Click once = <b>Start</b>, again = <b>End</b>.<br>
-        The app rejects routes that pass within <b>10 m</b> of any pothole and will try alternate paths or detours automatically.
+        Click once = <b>Start</b>, click again = <b>End</b>.<br>
+        The app will only show routes that <b>do not touch yellow markers</b> (strict).
+        If needed, it tries detours automatically (may be longer).
       </p>
       <div id="status" class="status">Waiting for Start…</div>
       <p class="muted" style="margin-top:10px;">
         Notes:<br>
-        – Yellow markers are hazards (potholes).<br>
-        – If needed, the app inserts a detour waypoint to find a safe route (can be longer).<br>
-        – Third click resets and starts over. Your location shows as a blue dot.
+        – Yellow = medium hazard (pothole).<br>
+        – Third click resets and starts again.<br>
+        – Your location appears as a blue dot (no accuracy ring).
       </p>
     </aside>
   </div>
 
-  <!-- Libraries -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
   <script>
     // ---------- Map ----------
-    const map = L.map("map").setView([41.058, 28.919], 14);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
-    }).addTo(map);
-
-    const ROUTE_COLOR = "#64b5f6";   // light blue
-    const LOC_DOT_COLOR = "#1976d2"; // blue
-
-    // ---------- Sidebar status ----------
-    const statusEl = document.getElementById("status");
-    const setStatus = (t) => statusEl.textContent = t;
-
-    // ---------- Your location: blue circle dot ----------
-    let userLocDot = null;
-    map.locate({ setView: false, maxZoom: 16 });
-    map.on("locationfound", (e) => {
-      if (userLocDot) map.removeLayer(userLocDot);
-      userLocDot = L.circleMarker(e.latlng, {
-        radius: 6, color: LOC_DOT_COLOR, weight: 2,
-        fillColor: LOC_DOT_COLOR, fillOpacity: 1
-      }).addTo(map).bindPopup("Your location");
-    });
-
-    // ---------- Hazard markers (green/yellow/red) ----------
-    const shadow = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-shadow.png";
-    const colorIcon = (color) => L.icon({
-      iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
-      shadowUrl: shadow, iconSize: [25,41], iconAnchor: [12,41],
-      popupAnchor: [1,-34], shadowSize: [41,41]
-    });
-    const icons = { low: colorIcon("green"), medium: colorIcon("yellow"), high: colorIcon("red") };
-
-    let potholes = [];
-    fetch("./data/points.json")
-      .then(r => { if (!r.ok) throw new Error("points.json HTTP " + r.status); return r.json(); })
-      .then(points => {
-        potholes = Array.isArray(points) ? points : [];
-        const bounds = L.latLngBounds();
-        potholes.forEach(p => {
-          const icon = icons[(p.danger || "medium").toLowerCase()] || icons.medium;
-          const latlng = [p.lat, p.lng];
-          L.marker(latlng, { icon }).bindPopup(`Pothole<br>${p.desc || ""}`).addTo(map);
-          bounds.extend(latlng);
-        });
-        if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
-      })
-      .catch(err => setStatus("Data load warning: " + err.message));
-
-    // ---------- Routing (OSRM) ----------
-    let router = null;
-    try {
-      if (L.Routing && L.Routing.osrmv1) {
-        router = L.Routing.osrmv1({
-          serviceUrl: "https://router.project-osrm.org/route/v1",
-          profile: "driving",
-          timeout: 30000,
-          urlParameters: { alternatives: true, overview: "full", steps: false, geometries: "geojson" }
-        });
-      }
-    } catch (e) { setStatus("Routing init failed."); }
-
-    // ---------- Strict avoidance utils ----------
-    const SAFE_BUFFER_M = 10;     // do NOT cross within 10 m
-    const DETOUR_RADIUS_M = 80;   // distance to place a detour waypoint
-    const DETOUR_BEARINGS = [0,45,90,135,180,225,270,315]; // degrees
-
-    function minDistToAnyHazard(latlng) {
-      let min = Infinity;
-      for (const p of potholes) {
-        const d = map.distance(latlng, [p.lat, p.lng]);
-        if (d < min) min = d;
-      }
-      return min;
-    }
-
-    function routeIsSafe(route) {
-      for (const c of route.coordinates) {
-        if (minDistToAnyHazard(c) < SAFE_BUFFER_M) return false;
-      }
-      return true;
-    }
-
-    function nearestHazardOnRoute(route) {
-      let best = null, bestD = Infinity, bestCoord = null;
-      for (const c of route.coordinates) {
-        const d = minDistToAnyHazard(c);
-        if (d < bestD) { bestD = d; bestCoord = c; }
-      }
-      // bestCoord is the route point closest to some hazard; now find that hazard
-      for (const p of potholes) {
-        const d = map.distance(bestCoord, [p.lat, p.lng]);
-        if (d === bestD || Math.abs(d - bestD) < 1e-3) { best = { lat: p.lat, lng: p.lng, d }; break; }
-      }
-      return best || { lat: bestCoord.lat, lng: bestCoord.lng, d: bestD };
-    }
-
-    // forward-geodesy: from (lat,lon) go distance (m) on bearing (deg)
-    function offsetPoint(lat, lon, distanceMeters, bearingDeg) {
-      const R = 6371000; // m
-      const br = bearingDeg * Math.PI/180;
-      const dR = distanceMeters / R;
-      const φ1 = lat * Math.PI/180, λ1 = lon * Math.PI/180;
-      const sinφ1 = Math.sin(φ1), cosφ1 = Math.cos(φ1);
-      const sinDR = Math.sin(dR), cosDR = Math.cos(dR);
-      const sinφ2 = sinφ1 * cosDR + cosφ1 * sinDR * Math.cos(br);
-      const φ2 = Math.asin(sinφ2);
-      const y = Math.sin(br) * sinDR * cosφ1;
-      const x = cosDR - sinφ1 * sinφ2;
-      const λ2 = λ1 + Math.atan2(y, x);
-      return L.latLng(φ2 * 180/Math.PI, ((λ2 * 180/Math.PI + 540) % 360) - 180);
-    }
-
-    // Try routes; if all unsafe, add detour waypoint around nearest hazard and retry
-    async function findStrictSafeRoute(startLL, endLL) {
-      return new Promise((resolve) => {
-        const baseWps = [L.Routing.waypoint(startLL), L.Routing.waypoint(endLL)];
-        router.route(baseWps, (err, routes) => {
-          if (!err && routes && routes.length) {
-            const safe = routes.filter(routeIsSafe);
-            if (safe.length) return resolve(safe[0]); // first safe
-            // else build detours around the closest hazard of the "best-by-distance" route
-            const byDist = [...routes].sort((a,b)=>(a.summary?.totalDistance||0)-(b.summary?.totalDistance||0))[0];
-            const h = nearestHazardOnRoute(byDist); // hazard to go around
-
-            // generate detour candidates
-            const candidates = DETOUR_BEARINGS.map(b => offsetPoint(h.lat, h.lng, DETOUR_RADIUS_M, b));
-            // Try each as a via waypoint until a safe route appears
-            const tryNext = (i) => {
-              if (i >= candidates.length) return resolve(null); // give up
-              const via = candidates[i];
-              const wps = [L.Routing.waypoint(startLL), L.Routing.waypoint(via), L.Routing.waypoint(endLL)];
-              router.route(wps, (e2, r2) => {
-                if (!e2 && r2 && r2.length) {
-                  const safe2 = r2.filter(routeIsSafe);
-                  if (safe2.length) return resolve(safe2[0]);
-                }
-                tryNext(i+1);
-              });
-            };
-            tryNext(0);
-          } else {
-            resolve(null);
-          }
-        });
-      });
-    }
-
-    // ---------- Click-to-route ----------
-    let startMarker = null, endMarker = null, routeLine = null;
-
-    function clearRoute() {
-      if (startMarker) map.removeLayer(startMarker);
-      if (endMarker)   map.removeLayer(endMarker);
-      if (routeLine)   map.removeLayer(routeLine);
-      startMarker = endMarker = routeLine = null;
-    }
-    function setStart(latlng) {
-      if (startMarker) map.removeLayer(startMarker);
-      startMarker = L.marker(latlng).addTo(map).bindPopup("Start").openPopup();
-      setStatus("Start set. Click again to set End.");
-    }
-    function setEnd(latlng) {
-      if (endMarker) map.removeLayer(endMarker);
-      endMarker = L.marker(latlng).addTo(map).bindPopup("End").openPopup();
-      setStatus("End set. Searching for a safe route (10 m buffer) …");
-    }
-
-    async function computeStrictRoute() {
-      if (!router) { setStatus("Routing unavailable. Check connection or ad-blocker."); return; }
-      if (!startMarker || !endMarker) return;
-
-      const safe = await findStrictSafeRoute(startMarker.getLatLng(), endMarker.getLatLng());
-      if (!safe) {
-        setStatus("No strict-safe route found after trying detours. Move Start/End and try again.");
-        if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-        return;
-      }
-      if (routeLine) map.removeLayer(routeLine);
-      routeLine = L.polyline(safe.coordinates, { color: ROUTE_COLOR, weight: 6, opacity: 0.95 }).addTo(map);
-      map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
-
-      const km = ((safe.summary?.totalDistance || 0) / 1000).toFixed(2);
-      const mins = Math.round((safe.summary?.totalTime || 0) / 60);
-      setStatus(`Strict-safe route ready. Distance: ${km} km, Time: ~${mins} min (10 m buffer around all potholes).`);
-    }
-
-    // 1st click = Start, 2nd = End (compute), 3rd = reset & new Start
-    map.on("click", (e) => {
-      if (!startMarker) {
-        setStart(e.latlng);
-      } else if (!endMarker) {
-        setEnd(e.latlng);
-        computeStrictRoute();
-      } else {
-        clearRoute();
-        setStart(e.latlng);
-      }
-    });
-
-    map.getContainer().style.cursor = "crosshair";
-  </script>
-</body>
-</html>
+    const m
 
